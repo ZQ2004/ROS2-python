@@ -1,0 +1,104 @@
+import os
+import time
+
+import cv2
+import rclpy
+from rclpy.node import Node
+from cv_bridge import CvBridge
+from chapt4_interfaces.srv import FaceDetector
+
+
+class FaceDetectorServer(Node):
+    def __init__(self):
+        super().__init__('face_server_node')
+
+        self.bridge = CvBridge()
+
+        # 优先使用当前OpenCV安装提供的模型目录
+        if hasattr(cv2, 'data'):
+            cascade_path = (
+                cv2.data.haarcascades
+                + 'haarcascade_frontalface_default.xml'
+            )
+        else:
+            cascade_path = (
+                '/usr/share/opencv4/haarcascades/'
+                'haarcascade_frontalface_default.xml'
+            )
+
+        self.face_cascade = cv2.CascadeClassifier(cascade_path)
+
+        if self.face_cascade.empty():
+            raise RuntimeError(f'人脸检测模型加载失败：{cascade_path}')
+
+        # 保留默认图片功能，仍可以用空请求测试
+        self.default_image_path = os.path.expanduser(
+            '~/图片/test.jpg'
+        )
+
+        self.srv = self.create_service(
+            FaceDetector,
+            'face_detect',
+            self.detect_callback,
+        )
+
+        self.get_logger().info('人脸检测服务端已启动，等待请求')
+
+    def detect_callback(self, request, response):
+        start_time = time.time()
+
+        # 1. 获取客户端发来的图片，或读取默认图片
+        if request.image.data:
+            cv_image = self.bridge.imgmsg_to_cv2(
+                request.image,
+                desired_encoding='bgr8',
+            )
+        else:
+            cv_image = cv2.imread(self.default_image_path)
+
+        if cv_image is None:
+            self.get_logger().error('图片读取失败')
+            response.use_time = time.time() - start_time
+            return response
+
+        # 2. 转为灰度图，检测人脸
+        gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+
+        faces = self.face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+        )
+
+        # 3. 填写响应
+        response.number = len(faces)
+        response.use_time = time.time() - start_time
+
+        for x, y, w, h in faces:
+            response.top.append(int(y))
+            response.right.append(int(x + w))
+            response.bottom.append(int(y + h))
+            response.left.append(int(x))
+
+        return response
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = None
+
+    try:
+        node = FaceDetectorServer()
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if node is not None:
+            node.destroy_node()
+
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
